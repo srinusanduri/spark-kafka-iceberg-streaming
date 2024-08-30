@@ -1,0 +1,132 @@
+version: "3"
+
+services:
+  spark-iceberg:
+    image: tabulario/spark-iceberg
+    container_name: spark-iceberg
+    build: spark/
+    networks:
+      - iceberg_net
+    depends_on:
+      - rest
+      - minio
+    volumes:
+      - ./warehouse:/home/iceberg/warehouse
+      - ./notebooks:/home/iceberg/notebooks/notebooks
+    env_file: .env
+#    environment:
+#      - AWS_ACCESS_KEY_ID=admin
+#      - AWS_SECRET_ACCESS_KEY=password
+#      - AWS_REGION=us-east-1
+    ports:
+      - 8888:8888
+      - 8080:8080
+      - 10000:10000
+      - 10001:10001
+
+  rest:
+    image: tabulario/iceberg-rest
+    container_name: iceberg-rest
+    networks:
+      - iceberg_net
+    ports:
+      - 8181:8181
+    env_file: .env
+#    environment:
+#      - AWS_ACCESS_KEY_ID=admin
+#      - AWS_SECRET_ACCESS_KEY=password
+#      - AWS_REGION=us-east-1
+#      - CATALOG_WAREHOUSE=s3://warehouse/
+#      - CATALOG_IO__IMPL=org.apache.iceberg.aws.s3.S3FileIO
+#      - CATALOG_S3_ENDPOINT=http://minio:9000
+#      - DATANUCLEUS_SCHEMA_AUTO_CREATE_TABLES=true  # Enable automatic table creation
+#      - DATANUCLEUS_SCHEMA_AUTO_CREATE=true  # Optional: Enable auto-creation of the schema
+
+  dremio:
+    platform: linux/x86_64
+    image: dremio/dremio-oss
+    ports:
+      - 9047:9047
+      - 31010:31010
+    container_name: dremio
+
+  minio:
+    image: minio/minio
+    container_name: minio
+    environment:
+      - MINIO_ROOT_USER=admin
+      - MINIO_ROOT_PASSWORD=password
+      - MINIO_DOMAIN=minio
+    networks:
+      iceberg_net:
+        aliases:
+          - warehouse.minio
+    ports:
+      - 9001:9001
+      - 9000:9000
+    command: ["server", "/data", "--console-address", ":9001"]
+
+  mc:
+    depends_on:
+      - minio
+    image: minio/mc
+    container_name: mc
+    networks:
+      - iceberg_net
+    env_file: .env
+#    environment:
+#      - AWS_ACCESS_KEY_ID=admin
+#      - AWS_SECRET_ACCESS_KEY=password
+#      - AWS_REGION=us-east-1
+    entrypoint: >
+      /bin/sh -c "
+      until (/usr/bin/mc config host add minio http://minio:9000 $AWS_ACCESS_KEY_ID $AWS_SECRET_ACCESS_KEY) do echo '...waiting...' && sleep 1; done;
+      /usr/bin/mc rm -r --force minio/warehouse;
+      /usr/bin/mc mb minio/warehouse;
+      /usr/bin/mc policy set public minio/warehouse;
+      tail -f /dev/null
+      "
+
+  kafka:
+    depends_on:
+      - zookeeper
+    image: confluentinc/cp-kafka:latest
+    container_name: kafka
+    networks:
+      - iceberg_net
+    ports:
+      - 9094:9094
+    environment:
+      - KAFKA_BROKER_ID=1
+      - KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      - KAFKA_LISTENERS=PLAINTEXT://kafka:9092,PLAINTEXT_HOST://0.0.0.0:9094
+      - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9094
+      - KAFKA_ZOOKEEPER_SESSION_TIMEOUT_MS=6000
+      - KAFKA_ZOOKEEPER_CONNECTION_TIMEOUT_MS=6000
+      - KAFKA_AUTO_CREATE_TOPICS_ENABLE=true  # Enable automatic topic creation
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    networks:
+      - iceberg_net
+    ports:
+      - "8082:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: PLAINTEXT://kafka:9092
+      DYNAMIC_CONFIG_ENABLED: 'true'
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:latest
+    container_name: zookeeper
+    networks:
+      - iceberg_net
+    ports:
+      - 2181:2181
+    environment:
+      - ZOOKEEPER_CLIENT_PORT=2181
+      - ZOOKEEPER_TICK_TIME=2000
+
+networks:
+  iceberg_net:
